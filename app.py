@@ -4,28 +4,27 @@ import joblib
 import re
 import logging
 import requests
-
+import pandas as pd
 app = Flask(__name__)
 CORS(app)
 YOUTUBE_API_KEY = 'AIzaSyDl9evGCdGM0RhxrAuc3kTUOsPMRf1k2uw'
 
-# Setup logging
+# Mengatur logging
 logging.basicConfig(level=logging.INFO)
 
-def search_youtube(query):
-    url = f'https://www.googleapis.com/youtube/v3/search?part=snippet&q={query}&key={YOUTUBE_API_KEY}'
+def search_youtube(query, max_results=5):
+    url = f'https://www.googleapis.com/youtube/v3/search?part=snippet&q={query}&key={YOUTUBE_API_KEY}&maxResults={max_results}'
     response = requests.get(url)
     if response.status_code == 200:
         result = response.json().get('items', [])
-        if result:
-            return result[0]['snippet']['title']
-    return None
+        return [{'url': f"https://www.youtube.com/watch?v={item['id']['videoId']}", 'title': item['snippet']['title']} for item in result if item['id']['kind'] == 'youtube#video']
+    return []
 
-# Load trained model and vectorizer
+# Memuat model dan vectorizer yang telah dilatih
 try:
     model, vectorizer, data = joblib.load('models/model.pkl')
 except Exception as e:
-    logging.error(f"Error loading model and vectorizer: {e}")
+    logging.error(f"Kesalahan saat memuat model dan vectorizer: {e}")
     model, vectorizer, data = None, None, None
 
 def is_valid_youtube_url(url):
@@ -37,35 +36,29 @@ def is_valid_youtube_url(url):
 @app.route('/recommendations', methods=['GET'])
 def get_recommendations():
     if model is None or vectorizer is None or data is None:
-        return jsonify({"error": "Model not loaded"}), 500
+        return jsonify({"error": "Model tidak dimuat"}), 500
     url = request.args.get('url')
     if not url or not is_valid_youtube_url(url):
-        return jsonify({"error": "Invalid YouTube URL"}), 400
+        return jsonify({"error": "URL YouTube tidak valid"}), 400
 
-    # Find the title of the input URL
+    # Mencari judul dari URL yang dimasukkan
     input_title = data[data['url'] == url]['title'].values
     if len(input_title) == 0:
-        # If URL not found, use a default title or the first title in the dataset
-        input_title = data['title'].values[:1]
-        logging.info(f"URL not found in dataset, using default title: {input_title[0]}")
+        # Jika URL tidak ditemukan, mencari judul video di YouTube
+        logging.info(f"URL tidak ditemukan dalam dataset, mencari judul video di YouTube.")
+        video_info = search_youtube(url)
+        if not video_info:
+            return jsonify({"error": "Video tidak ditemukan di YouTube"}), 404
+        video_title = video_info[0]['title']
+        input_title = [video_title]
+        logging.info(f"Judul video ditemukan dari YouTube: {video_title}")
     else:
         input_title = input_title[:1]
 
-    # Transform the input title to vector
-    input_vector = vectorizer.transform(input_title)
-
-    # Determine the number of neighbors to use
-    n_neighbors = min(5, len(data))
-
-    try:
-        # Find the nearest neighbors
-        distances, indices = model.kneighbors(input_vector, n_neighbors=n_neighbors)
-    except ValueError as e:
-        logging.error(f"Error finding nearest neighbors: {e}")
-        return jsonify({"error": str(e)}), 500
-
-    # Get the recommended video URLs and titles
-    recommendations = data.iloc[indices[0]].to_dict(orient='records')
+    # Mendapatkan URL dan judul video rekomendasi dari YouTube
+    recommendations = search_youtube(input_title[0], max_results=5)
+    
+    logging.info(f"Rekomendasi: {recommendations}")
     return jsonify(recommendations)
 
 if __name__ == '__main__':
